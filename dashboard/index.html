@@ -3,12 +3,113 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Radar: pre-token protocols ranked by implied value</title>
+<title>Launch Radar — pre-token protocols ranked by implied value</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<a class="skip" href="#board">Skip to the board</a>
-<main id="board" tabindex="-1" aria-busy="true"></main>
+<header class="masthead">
+  <div class="masthead-in">
+    <div class="brand">
+      <span class="blip" aria-hidden="true"></span>
+      <div>
+        <h1>LAUNCH RADAR</h1>
+        <p class="tagline">Every protocol that records no token yet, priced by a comparables fit and ranked. Snapshot <span id="k-asof">…</span> · model <span id="k-model">…</span></p>
+      </div>
+    </div>
+    <div class="kpis" id="kpis" aria-label="Radar totals"></div>
+  </div>
+</header>
+
+<main id="view-board">
+  <section class="panel model-panel" aria-label="How the model prices a protocol">
+    <h2>How a protocol gets its number</h2>
+    <div id="model-text"></div>
+    <div class="validation" id="validation"></div>
+  </section>
+
+  <section class="controls panel" aria-label="Board controls">
+    <label class="ctl grow">Search
+      <input id="f-q" type="search" placeholder="Name or slug…" autocomplete="off">
+    </label>
+    <label class="ctl">Category
+      <select id="f-cat"></select>
+    </label>
+    <label class="ctl">Chain
+      <select id="f-chain"></select>
+    </label>
+    <label class="ctl">Verdict
+      <select id="f-verdict">
+        <option value="all">All verdicts</option>
+        <option value="FARM">FARM</option>
+        <option value="THIN">THIN</option>
+        <option value="SKIP">SKIP</option>
+      </select>
+    </label>
+    <label class="ctl">Sort by
+      <select id="f-sort">
+        <option value="rank">Rank</option>
+        <option value="implied">Implied value</option>
+        <option value="tvl">TVL</option>
+        <option value="growth">7-day growth</option>
+        <option value="age">Age (tokenless years)</option>
+        <option value="name">Name</option>
+      </select>
+    </label>
+    <label class="ctl check">
+      <input id="f-watch" type="checkbox"> Watchlist only
+    </label>
+    <button id="btn-csv" type="button">Export CSV</button>
+  </section>
+
+  <section class="panel board-panel" aria-label="The ranked board">
+    <div class="board-head">
+      <h2>The board</h2>
+      <p id="board-count" class="muted"></p>
+    </div>
+    <div class="table-wrap">
+      <table id="board-table">
+        <thead>
+          <tr>
+            <th class="num">#</th>
+            <th>Protocol</th>
+            <th>Category</th>
+            <th>Chains</th>
+            <th class="num">TVL</th>
+            <th class="num">7d</th>
+            <th class="num">Age</th>
+            <th class="num">Implied value <span class="th-sub">range</span></th>
+            <th>Verdict</th>
+          </tr>
+        </thead>
+        <tbody id="board-body"></tbody>
+      </table>
+    </div>
+    <p class="muted small" id="board-note"></p>
+  </section>
+
+  <section class="panel live-panel" aria-label="Protocols whose token already trades">
+    <h2>Already trading — priced by the market, not the model</h2>
+    <p class="muted small">These protocols record a token, so the radar never ranks them. They are the fit's training set: the model learns what TVL is worth from the values below.</p>
+    <div class="table-wrap">
+      <table id="live-table">
+        <thead>
+          <tr><th>Protocol</th><th>Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">7d</th></tr>
+        </thead>
+        <tbody id="live-body"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<main id="view-detail" hidden>
+  <button id="btn-back" type="button">← Back to the board</button>
+  <div id="detail"></div>
+</main>
+
+<footer class="foot">
+  <p id="foot-note"></p>
+</footer>
+
 <script src="../data.js"></script>
 <script src="app.js"></script>
 </body>
