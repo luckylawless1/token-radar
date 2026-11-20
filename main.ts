@@ -109,7 +109,11 @@ process.stdout.write(
     `${snapshot.watchlist.length} watchlist covered, fit on ${radar.counts.fit_n} tokenized protocols\n` +
     `launch radar: blind validation, partition A: median error ${radar.validation.median_abs_err_pct}%, ` +
     `${radar.validation.within_2x_pct}% within 2x; partition B: median error ${radar.validation_b.median_abs_err_pct}%, ` +
-    `${radar.validation_b.within_2x_pct}% within 2x; ranges covered ${radar.model.range_coverage_pct}% of blind caps\n` +
+    `${radar.validation_b.within_2x_pct}% within 2x; leave-one-out: median error ${radar.validation_loo.median_abs_err_pct}%, ` +
+    `${radar.validation_loo.within_2x_pct}% within 2x; ranges covered ${radar.model.range_coverage_pct}% of blind caps\n` +
+    `launch radar: verdict backtest on ${radar.backtest.n} blind cases: ` +
+    radar.backtest.buckets.map((b) => `${b.verdict} covered cost in ${b.covered_pct}% of ${b.n}`).join('; ') +
+    `; farming only FARM returned x${radar.backtest.farm_only.multiple} against x${radar.backtest.farm_everything.multiple} for farming everything\n` +
     `launch radar: verdicts FARM ${verdicts.FARM} / THIN ${verdicts.THIN} / SKIP ${verdicts.SKIP}\n` +
     `launch radar: wrote board.json, data.js, dashboard/ (${dashFiles.length} files), screenshots/ (${shots.length} images) and dossier.json (${dossier.length} bytes) to ${outDir}\n`,
 );

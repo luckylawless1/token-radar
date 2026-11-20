@@ -13,7 +13,7 @@
       <span class="blip" aria-hidden="true"></span>
       <div>
         <h1>LAUNCH RADAR</h1>
-        <p class="tagline">Every protocol that records no token yet, priced by a comparables fit whose every term was blind-tested before it was kept, and ranked. Snapshot <span id="k-asof">…</span> · model <span id="k-model">…</span></p>
+        <p class="tagline">Every protocol that records no token yet, priced by a comparables fit whose every term was blind-tested before it was kept, ranked — and graded on its own farm verdicts. Snapshot <span id="k-asof">…</span> · model <span id="k-model">…</span></p>
       </div>
     </div>
     <div class="kpis" id="kpis" aria-label="Radar totals"></div>
@@ -36,6 +36,48 @@
       </table>
     </div>
     <p class="muted small" id="terms-note"></p>
+  </section>
+
+  <section class="panel audit-panel" aria-label="Calibration, category errors and the verdict backtest">
+    <h2>The audit — what the blind tests say about the board itself</h2>
+    <div class="duo">
+      <div>
+        <h3 class="terms-head first">Calibration, by blind predicted value</h3>
+        <div class="table-wrap">
+          <table id="calib-table">
+            <thead>
+              <tr><th>Quintile</th><th class="num">Cases</th><th class="num">Median blind value</th><th class="num">Median recorded cap</th><th class="num">Cap / blind</th><th class="num">Within 2x</th></tr>
+            </thead>
+            <tbody id="calib-body"></tbody>
+          </table>
+        </div>
+        <p class="muted small" id="calib-note"></p>
+      </div>
+      <div>
+        <h3 class="terms-head first">Blind error by category</h3>
+        <div class="table-wrap">
+          <table id="caterr-table">
+            <thead>
+              <tr><th>Category</th><th class="num">Fit members</th><th class="num">Median blind error</th></tr>
+            </thead>
+            <tbody id="caterr-body"></tbody>
+          </table>
+        </div>
+        <p class="muted small" id="caterr-note"></p>
+      </div>
+    </div>
+    <h3 class="terms-head">The verdicts, backtested</h3>
+    <div id="backtest-text"></div>
+    <div class="validation" id="backtest-stats"></div>
+    <div class="table-wrap">
+      <table id="backtest-table">
+        <thead>
+          <tr><th>Verdict at the blind value</th><th class="num">Blind cases</th><th class="num">Would have covered plan cost</th><th class="num">Median recorded cap / blind value</th></tr>
+        </thead>
+        <tbody id="backtest-body"></tbody>
+      </table>
+    </div>
+    <p class="muted small" id="backtest-note"></p>
   </section>
 
   <section class="controls panel" aria-label="Board controls">
@@ -78,6 +120,7 @@
       <h2>The board</h2>
       <p id="board-count" class="muted"></p>
     </div>
+    <div id="shortlist" aria-label="Start here: the strongest FARM plans"></div>
     <div class="table-wrap">
       <table id="board-table">
         <thead>

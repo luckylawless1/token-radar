@@ -1,5 +1,10 @@
-// Launch Radar's model, version 2 of the entry: one snapshot of the protocol universe in, one
-// ranked board out.
+// Launch Radar's model, version 3 of the entry: one snapshot of the protocol universe in, one
+// ranked board out. The pricing spec is version 2's, unchanged — a wider sweep of candidate
+// families (per-category slopes, a nearest-neighbour blend, weighted and robust lines, a
+// recalibration) was blind-tested against it for this version and none earned the board (the
+// dashboard's terms table prints every one's error). What version 3 adds is audit depth:
+// leave-one-out validation, a calibration table, per-category blind errors, and a backtest
+// of the farm verdicts themselves, all computed from the same out-of-fold predictions.
 //
 // The board ranks EVERY protocol in the snapshot that records no token (no CoinGecko id and no
 // symbol: 342 of the 758), the snapshot's 40-protocol watchlist included and flagged. Protocols
@@ -36,12 +41,20 @@
 // not raise its price. The dashboard's model panel prints each tested term's blind error next
 // to the production model's, computed at build time by the same code that prices the board.
 //
-// Validation is out of sample and deterministic, twice over. The tokenized fit set is split
-// into five folds by an FNV-1a hash of the slug (the first version's partition, kept so the
-// two versions' headline errors are comparable fold for fold) and again by a second partition
-// of the same hash; each fold is predicted by a fit that never saw it, under the exact
-// production rule including the multiplier bound. The dashboard reports both partitions'
-// median absolute error and share within 2x of the recorded market cap.
+// Validation is out of sample and deterministic, three times over. The tokenized fit set is
+// split into five folds by an FNV-1a hash of the slug (the first version's partition, kept
+// so the versions' headline errors are comparable fold for fold) and again by a second
+// partition of the same hash; each fold is predicted by a fit that never saw it, under the
+// exact production rule including the multiplier bound. A leave-one-out pass then predicts
+// every fit-set protocol from the other 127. The dashboard reports all three validations'
+// median absolute error and share within 2x of the recorded market cap, a calibration table
+// of the first partition's blind predictions by quintile, and each category's blind error.
+//
+// The same blind predictions also grade the board's decisions, not just its prices: every
+// fit-set protocol takes the farm verdict the rule gives at its blind value, and the
+// dashboard's backtest panel reports how those verdicts ended against the caps the market
+// actually set — what share of each bucket's plans the realised take would have covered,
+// and what farming only the FARM bucket would have returned against farming everything.
 //
 // Each row's range is calibrated on blind predictions rather than on the fit's own residuals:
 // the 10th and 90th percentiles of the first partition's out-of-fold log residuals set the
@@ -279,9 +292,10 @@ function validateSpec(
   spec: FitSpec,
   asOf: string,
   foldOf: (p: SnapshotProtocol) => number,
-): { validation: Validation; oosLogResiduals: number[] } {
+): { validation: Validation; oosLogResiduals: number[]; oofLogPreds: Map<string, number> } {
   const errs: number[] = [];
   const oosLogResiduals: number[] = [];
+  const oofLogPreds = new Map<string, number>();
   let within = 0;
   for (let fold = 0; fold < 5; fold++) {
     const train = fitSet.filter((p) => foldOf(p) !== fold);
@@ -289,6 +303,7 @@ function validateSpec(
     for (const p of fitSet) {
       if (foldOf(p) !== fold) continue;
       const logPred = predictLog(foldFit, p);
+      oofLogPreds.set(p.slug, logPred);
       const ratio = Math.exp(logPred) / p.mcap_usd!;
       errs.push(Math.abs(ratio - 1));
       oosLogResiduals.push(Math.log(p.mcap_usd!) - logPred);
@@ -304,7 +319,168 @@ function validateSpec(
       within_2x_pct: round2((within / errs.length) * 100),
     },
     oosLogResiduals,
+    oofLogPreds,
   };
+}
+
+/** The same five-fold loop for a candidate family with its own fit and prediction rule. */
+function validateCustom<F>(
+  fitSet: SnapshotProtocol[],
+  foldOf: (p: SnapshotProtocol) => number,
+  fitFn: (train: SnapshotProtocol[]) => F,
+  predFn: (fit: F, p: SnapshotProtocol) => number,
+): Validation {
+  const errs: number[] = [];
+  let within = 0;
+  for (let fold = 0; fold < 5; fold++) {
+    const fit = fitFn(fitSet.filter((p) => foldOf(p) !== fold));
+    for (const p of fitSet) {
+      if (foldOf(p) !== fold) continue;
+      const ratio = Math.exp(predFn(fit, p)) / p.mcap_usd!;
+      errs.push(Math.abs(ratio - 1));
+      if (Math.abs(Math.log(ratio)) <= Math.log(2)) within++;
+    }
+  }
+  errs.sort((x, y) => x - y);
+  return {
+    folds: 5,
+    n: errs.length,
+    median_abs_err_pct: round2(errs[Math.floor(errs.length / 2)]! * 100),
+    within_2x_pct: round2((within / errs.length) * 100),
+  };
+}
+
+/** Weighted least squares via the normal equations, for the weighted and robust candidates. */
+function regressWeighted(xs: number[][], ys: number[], ws: number[]): number[] {
+  const k = xs[0]!.length;
+  const ata = Array.from({ length: k }, () => new Array<number>(k).fill(0));
+  const aty = new Array<number>(k).fill(0);
+  for (let i = 0; i < xs.length; i++) {
+    for (let r = 0; r < k; r++) {
+      aty[r]! += ws[i]! * xs[i]![r]! * ys[i]!;
+      for (let c = 0; c < k; c++) ata[r]![c]! += ws[i]! * xs[i]![r]! * xs[i]![c]!;
+    }
+  }
+  return solve(ata, aty);
+}
+
+/**
+ * A candidate fit whose line comes from a supplied estimator (weighted least squares, or a
+ * Huber IRLS line) while its category shifts are fitOn's own: the same shrunk mean residuals.
+ * The prediction rule is predictLog's, unchanged — only the line differs.
+ */
+function fitOnLine(
+  pts: SnapshotProtocol[],
+  spec: FitSpec,
+  asOf: string,
+  betaOf: (xs: number[][], ys: number[]) => number[],
+): RegressionFit {
+  const dated = pts
+    .map((p) => ageDays(asOf, p.listed_at))
+    .filter((d): d is number => d !== null)
+    .sort((x, y) => x - y);
+  const ctx: FitContext = {
+    medianAgeDays: dated.length > 0 ? dated[Math.floor(dated.length / 2)]! : 730,
+    asOf,
+  };
+  const xs = pts.map((p) => features(p, spec, ctx));
+  const ys = pts.map((p) => Math.log(p.mcap_usd!));
+  const beta = betaOf(xs, ys);
+  const residuals = new Map<string, number[]>();
+  for (let i = 0; i < pts.length; i++) {
+    const pred = xs[i]!.reduce((s, v, j) => s + v * beta[j]!, 0);
+    const key = categoryOf(pts[i]!);
+    const arr = residuals.get(key);
+    if (arr === undefined) residuals.set(key, [ys[i]! - pred]);
+    else arr.push(ys[i]! - pred);
+  }
+  const offsets = new Map<string, number>();
+  for (const [key, arr] of residuals) {
+    const mean = arr.reduce((s, v) => s + v, 0) / arr.length;
+    offsets.set(key, mean * (arr.length / (arr.length + SHRINK_K)));
+  }
+  return { beta, offsets, ctx, spec };
+}
+
+/** A Huber line: least squares, then twelve IRLS passes downweighting outlying comps. */
+function huberBeta(xs: number[][], ys: number[]): number[] {
+  let beta = regress(xs, ys);
+  for (let iter = 0; iter < 12; iter++) {
+    const resid = ys.map((y, i) => y - xs[i]!.reduce((s, v, j) => s + v * beta[j]!, 0));
+    const abs = resid.map((r) => Math.abs(r)).sort((x, y) => x - y);
+    const mad = abs[Math.floor(abs.length / 2)]! * 1.4826 || 1;
+    const ws = resid.map((r) => {
+      const u = Math.abs(r) / mad;
+      return u <= 1.345 ? 1 : 1.345 / u;
+    });
+    beta = regressWeighted(xs, ys, ws);
+  }
+  return beta;
+}
+
+/** A fit with a per-category TVL slope, each shrunk toward the global slope by n / (n + K). */
+interface CatSlopeFit {
+  fit: RegressionFit;
+  slopes: Map<string, number>;
+  meanLogTvl: number;
+}
+
+function fitCatSlope(pts: SnapshotProtocol[], spec: FitSpec, asOf: string, K: number): CatSlopeFit {
+  const fit = fitOn(pts, spec, asOf);
+  const meanLogTvl = pts.reduce((s, p) => s + Math.log(Math.max(1, p.tvl_usd)), 0) / pts.length;
+  const byCat = new Map<string, { resid: number[]; lt: number[] }>();
+  for (const p of pts) {
+    const row = features(p, spec, fit.ctx);
+    const linePred = row.reduce((s, v, j) => s + v * fit.beta[j]!, 0);
+    const key = categoryOf(p);
+    let e = byCat.get(key);
+    if (e === undefined) {
+      e = { resid: [], lt: [] };
+      byCat.set(key, e);
+    }
+    e.resid.push(Math.log(p.mcap_usd!) - linePred);
+    e.lt.push(row[1]!);
+  }
+  const slopes = new Map<string, number>();
+  for (const [key, e] of byCat) {
+    const n = e.resid.length;
+    if (n < 3) continue;
+    const meanR = e.resid.reduce((s, v) => s + v, 0) / n;
+    const meanLt = e.lt.reduce((s, v) => s + v, 0) / n;
+    let num = 0;
+    let den = 0;
+    for (let i = 0; i < n; i++) {
+      num += (e.lt[i]! - meanLt) * (e.resid[i]! - meanR);
+      den += (e.lt[i]! - meanLt) ** 2;
+    }
+    slopes.set(key, (den > 1e-9 ? num / den : 0) * (n / (n + K)));
+  }
+  return { fit, slopes, meanLogTvl };
+}
+
+function predictCatSlope(f: CatSlopeFit, p: SnapshotProtocol): number {
+  const adj = (f.slopes.get(categoryOf(p)) ?? 0) * (Math.log(Math.max(1, p.tvl_usd)) - f.meanLogTvl);
+  return predictLog(f.fit, p) + adj;
+}
+
+/**
+ * The nearest-neighbour read: the median log multiple of the k training protocols closest in
+ * log TVL, same category when at least three are available, read as a value at this TVL.
+ */
+function knnLogPred(train: SnapshotProtocol[], p: SnapshotProtocol, k: number): number | null {
+  const lt = Math.log(Math.max(1, p.tvl_usd));
+  const sameCat = train.filter((t) => categoryOf(t) === categoryOf(p));
+  const pool = sameCat.length >= 3 ? sameCat : train;
+  const near = pool
+    .map((t) => ({
+      d: Math.abs(Math.log(Math.max(1, t.tvl_usd)) - lt),
+      mult: Math.log(t.mcap_usd! / Math.max(1, t.tvl_usd)),
+    }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, k);
+  if (near.length === 0) return null;
+  const mults = near.map((n) => n.mult).sort((a, b) => a - b);
+  return lt + mults[Math.floor(mults.length / 2)]!;
 }
 
 /** A candidate term's blind-test outcome, printed on the dashboard's model panel. */
@@ -313,6 +489,44 @@ export interface TermTest {
   kept: boolean;
   median_abs_err_pct: number;
   within_2x_pct: number;
+  /** Why a candidate that wins a single number was still not kept, when that needs saying. */
+  note?: string;
+}
+
+/** One quintile of the blind predictions, by predicted value: what the market actually set. */
+export interface CalibrationBucket {
+  n: number;
+  median_pred_usd: number;
+  median_actual_usd: number;
+  median_ratio: number;
+  within_2x_pct: number;
+}
+
+/** One farm verdict's record in the backtest: how its blind cases ended at the real caps. */
+export interface BacktestBucket {
+  verdict: 'FARM' | 'THIN' | 'SKIP';
+  n: number;
+  /** Share of the bucket whose take at the recorded cap would have covered the plan's cost. */
+  covered_pct: number;
+  /** Median of recorded cap over blind implied value in the bucket. */
+  median_actual_over_blind: number;
+}
+
+/** The verdict rule graded on the fit set's blind predictions against the caps actually set. */
+export interface VerdictBacktest {
+  n: number;
+  buckets: BacktestBucket[];
+  /** Farming only the FARM bucket: total plan cost against total take at the recorded caps. */
+  farm_only: { cost_usd: number; take_usd: number; multiple: number };
+  /** Farming all 128 the same way: the contrast the verdicts exist to make. */
+  farm_everything: { cost_usd: number; take_usd: number; multiple: number };
+}
+
+/** One category's blind error on the fit set: where the comps are thick and where they are thin. */
+export interface CategoryError {
+  category: string;
+  n: number;
+  median_abs_err_pct: number;
 }
 
 /** The fitted production model and everything the board and dashboard derive from it. */
@@ -336,7 +550,16 @@ export interface CompsFit {
 export function fitModel(
   protocols: SnapshotProtocol[],
   asOf: string,
-): { fit: CompsFit; validation: Validation; validationB: Validation; termsTested: TermTest[] } {
+): {
+  fit: CompsFit;
+  validation: Validation;
+  validationB: Validation;
+  validationLoo: Validation;
+  termsTested: TermTest[];
+  calibration: CalibrationBucket[];
+  backtest: VerdictBacktest;
+  categoryErrors: CategoryError[];
+} {
   const fitSet = protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
   const foldA = (p: SnapshotProtocol): number => slugHash(p.slug) % 5;
   const foldB = (p: SnapshotProtocol): number => (slugHash(p.slug) >>> 8) % 5;
@@ -368,18 +591,41 @@ export function fitModel(
   const covered = a.oosLogResiduals.filter((r) => r >= fit.resid_q10 && r <= fit.resid_q90).length;
   fit.range_coverage_pct = round2((covered / a.oosLogResiduals.length) * 100);
 
-  // The candidate terms, blind-tested on the first partition by the same folds and metric:
-  // the production spec, the same fit without its growth term (the first version's recipe),
-  // and the production spec plus a log-age term (the maturity hypothesis).
+  // The candidate terms and model families, blind-tested on the first partition by the same
+  // folds and metric. A candidate replaces the production model only if it beats its median
+  // error on BOTH partitions and gives up nothing within 2x on either; at n=128 a win on one
+  // partition alone is fold noise, and the table's notes say so where that is what happened.
   const noGrowth = validateSpec(fitSet, { growth: false, age: false }, asOf, foldA).validation;
   const withAge = validateSpec(fitSet, { growth: true, age: true }, asOf, foldA).validation;
-  const termsTested: TermTest[] = [
-    {
-      name: 'TVL + category shifts only (the first version\u2019s recipe)',
-      kept: false,
-      median_abs_err_pct: noGrowth.median_abs_err_pct,
-      within_2x_pct: noGrowth.within_2x_pct,
+  const wlsSqrt = (pts: SnapshotProtocol[]): RegressionFit =>
+    fitOnLine(pts, PRODUCTION_SPEC, asOf, (xs, ys) =>
+      regressWeighted(xs, ys, pts.map((p) => Math.sqrt(p.tvl_usd) / 1000)),
+    );
+  const wlsA = validateCustom(fitSet, foldA, wlsSqrt, predictLog);
+  const wlsB = validateCustom(fitSet, foldB, wlsSqrt, predictLog);
+  const huberA = validateCustom(
+    fitSet,
+    foldA,
+    (pts) => fitOnLine(pts, PRODUCTION_SPEC, asOf, huberBeta),
+    predictLog,
+  );
+  const catSlopeA = validateCustom(
+    fitSet,
+    foldA,
+    (pts) => fitCatSlope(pts, PRODUCTION_SPEC, asOf, 16),
+    predictCatSlope,
+  );
+  const knnA = validateCustom(
+    fitSet,
+    foldA,
+    (pts) => ({ fit: fitOn(pts, PRODUCTION_SPEC, asOf), train: pts }),
+    (f, p) => {
+      const base = predictLog(f.fit, p);
+      const knn = knnLogPred(f.train, p, 8);
+      return knn === null ? base : 0.85 * base + 0.15 * knn;
     },
+  );
+  const termsTested: TermTest[] = [
     {
       name: 'fitted 7-day growth term (compressed, multiplier bounded)',
       kept: true,
@@ -387,13 +633,156 @@ export function fitModel(
       within_2x_pct: a.validation.within_2x_pct,
     },
     {
+      name: 'square-root-TVL weighted least squares',
+      kept: false,
+      median_abs_err_pct: wlsA.median_abs_err_pct,
+      within_2x_pct: wlsA.within_2x_pct,
+      note:
+        `wins the median on both partitions (${wlsA.median_abs_err_pct}% here, ${wlsB.median_abs_err_pct}% on B, ` +
+        `against ${a.validation.median_abs_err_pct}% and ${b.validation.median_abs_err_pct}%), but its within-2x share ` +
+        `falls on both (${wlsA.within_2x_pct}% and ${wlsB.within_2x_pct}% against ${a.validation.within_2x_pct}% and ` +
+        `${b.validation.within_2x_pct}%): at n=128 that trade is fold noise, not signal`,
+    },
+    {
+      name: 'Huber robust line (downweights outlier comps)',
+      kept: false,
+      median_abs_err_pct: huberA.median_abs_err_pct,
+      within_2x_pct: huberA.within_2x_pct,
+    },
+    {
+      name: 'TVL + category shifts only (the first version\u2019s recipe)',
+      kept: false,
+      median_abs_err_pct: noGrowth.median_abs_err_pct,
+      within_2x_pct: noGrowth.within_2x_pct,
+    },
+    {
+      name: 'nearest-neighbour blend (8 closest by TVL, 15% weight)',
+      kept: false,
+      median_abs_err_pct: knnA.median_abs_err_pct,
+      within_2x_pct: knnA.within_2x_pct,
+    },
+    {
       name: 'log-age (maturity) term added',
       kept: false,
       median_abs_err_pct: withAge.median_abs_err_pct,
       within_2x_pct: withAge.within_2x_pct,
     },
+    {
+      name: 'per-category TVL slopes, shrunk to the global slope',
+      kept: false,
+      median_abs_err_pct: catSlopeA.median_abs_err_pct,
+      within_2x_pct: catSlopeA.within_2x_pct,
+    },
   ];
-  return { fit, validation: a.validation, validationB: b.validation, termsTested };
+
+  // Leave-one-out: every fit-set protocol predicted by a fit that saw the other 127. A third
+  // validation, harsher in a different way than either fold partition, reported alongside.
+  const looErrs: number[] = [];
+  let looWithin = 0;
+  for (const p of fitSet) {
+    const looFit = fitOn(
+      fitSet.filter((t) => t.slug !== p.slug),
+      PRODUCTION_SPEC,
+      asOf,
+    );
+    const ratio = Math.exp(predictLog(looFit, p)) / p.mcap_usd!;
+    looErrs.push(Math.abs(ratio - 1));
+    if (Math.abs(Math.log(ratio)) <= Math.log(2)) looWithin++;
+  }
+  looErrs.sort((x, y) => x - y);
+  const validationLoo: Validation = {
+    folds: fitSet.length,
+    n: looErrs.length,
+    median_abs_err_pct: round2(looErrs[Math.floor(looErrs.length / 2)]! * 100),
+    within_2x_pct: round2((looWithin / looErrs.length) * 100),
+  };
+
+  const medianOf = (xs: number[]): number => {
+    const s = [...xs].sort((x, y) => x - y);
+    return s[Math.floor(s.length / 2)]!;
+  };
+
+  // Calibration: the first partition's blind predictions in quintiles of predicted value,
+  // each against the caps the market actually set. A calibrated model's median ratio stays
+  // near 1 across the table; this one's compresses toward the middle, and the panel says so.
+  const oofRows = fitSet
+    .map((p) => ({ p, pred: Math.exp(a.oofLogPreds.get(p.slug)!), actual: p.mcap_usd! }))
+    .sort((x, y) => x.pred - y.pred || (x.p.slug < y.p.slug ? -1 : 1));
+  const calibration: CalibrationBucket[] = [];
+  const per = Math.floor(oofRows.length / 5);
+  for (let q = 0; q < 5; q++) {
+    const bucket = oofRows.slice(q * per, q === 4 ? oofRows.length : (q + 1) * per);
+    calibration.push({
+      n: bucket.length,
+      median_pred_usd: Math.round(medianOf(bucket.map((r) => r.pred))),
+      median_actual_usd: Math.round(medianOf(bucket.map((r) => r.actual))),
+      median_ratio: round2(medianOf(bucket.map((r) => r.actual / r.pred))),
+      within_2x_pct: round2(
+        (bucket.filter((r) => Math.abs(Math.log(r.actual / r.pred)) <= Math.log(2)).length / bucket.length) * 100,
+      ),
+    });
+  }
+
+  // The verdicts, backtested: each fit-set protocol takes the verdict the rule gives at its
+  // BLIND value (the value a fit that never saw it produced), and the verdict is graded
+  // against the cap the market actually set — the take at that cap against the plan's cost.
+  // The fit set is by construction protocols whose tokens exist, so this grades the pricing
+  // and the verdict arithmetic, never the chance that a token is issued at all.
+  const btAcc = {
+    FARM: { n: 0, covered: 0, ratios: [] as number[], cost: 0, take: 0 },
+    THIN: { n: 0, covered: 0, ratios: [] as number[], cost: 0, take: 0 },
+    SKIP: { n: 0, covered: 0, ratios: [] as number[], cost: 0, take: 0 },
+  };
+  for (const p of fitSet) {
+    const impliedOof = Math.max(1, Math.round(Math.exp(a.oofLogPreds.get(p.slug)!)));
+    const plan = farmPlan(p, impliedOof);
+    const acc = btAcc[plan.verdict];
+    const takeAtActual = p.mcap_usd! * (AIRDROP_SHARE / AIRDROP_WALLETS);
+    acc.n++;
+    if (takeAtActual >= plan.total_cost_usd) acc.covered++;
+    acc.ratios.push(p.mcap_usd! / impliedOof);
+    acc.cost += plan.total_cost_usd;
+    acc.take += takeAtActual;
+  }
+  const btBuckets: BacktestBucket[] = (['FARM', 'THIN', 'SKIP'] as const).map((v) => ({
+    verdict: v,
+    n: btAcc[v].n,
+    covered_pct: round2(btAcc[v].n > 0 ? (btAcc[v].covered / btAcc[v].n) * 100 : 0),
+    median_actual_over_blind: round2(medianOf(btAcc[v].ratios)),
+  }));
+  const allCost = btAcc.FARM.cost + btAcc.THIN.cost + btAcc.SKIP.cost;
+  const allTake = btAcc.FARM.take + btAcc.THIN.take + btAcc.SKIP.take;
+  const backtest: VerdictBacktest = {
+    n: fitSet.length,
+    buckets: btBuckets,
+    farm_only: {
+      cost_usd: btAcc.FARM.cost,
+      take_usd: Math.round(btAcc.FARM.take),
+      multiple: round2(btAcc.FARM.cost > 0 ? btAcc.FARM.take / btAcc.FARM.cost : 0),
+    },
+    farm_everything: {
+      cost_usd: allCost,
+      take_usd: Math.round(allTake),
+      multiple: round2(allCost > 0 ? allTake / allCost : 0),
+    },
+  };
+
+  // Per-category blind error on the fit set: where the comps support a tight price and
+  // where they do not. Categories under four members are left out as too thin to read.
+  const catErrs = new Map<string, number[]>();
+  for (const p of fitSet) {
+    const ratio = Math.exp(a.oofLogPreds.get(p.slug)!) / p.mcap_usd!;
+    const key = categoryOf(p);
+    const arr = catErrs.get(key);
+    if (arr === undefined) catErrs.set(key, [Math.abs(ratio - 1) * 100]);
+    else arr.push(Math.abs(ratio - 1) * 100);
+  }
+  const categoryErrors: CategoryError[] = [...catErrs.entries()]
+    .filter(([, errs]) => errs.length >= 4)
+    .map(([category, errs]) => ({ category, n: errs.length, median_abs_err_pct: round2(medianOf(errs)) }))
+    .sort((x, y) => y.n - x.n || (x.category < y.category ? -1 : 1));
+
+  return { fit, validation: a.validation, validationB: b.validation, validationLoo, termsTested, calibration, backtest, categoryErrors };
 }
 
 // ---------------------------------------------------------------- scoring one protocol
@@ -759,13 +1148,18 @@ export interface RadarData {
   };
   validation: Validation;
   validation_b: Validation;
+  validation_loo: Validation;
+  calibration: CalibrationBucket[];
+  backtest: VerdictBacktest;
+  category_errors: CategoryError[];
   rows: BoardRow[];
   traded: TradedRow[];
 }
 
 /** The whole radar from one snapshot: fit, price every pre-token protocol, rank, plan. */
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
-  const { fit, validation, validationB, termsTested } = fitModel(snapshot.protocols, snapshot.as_of);
+  const { fit, validation, validationB, validationLoo, termsTested, calibration, backtest, categoryErrors } =
+    fitModel(snapshot.protocols, snapshot.as_of);
   const watch = new Set(snapshot.watchlist);
   const pre = snapshot.protocols.filter(recordsNoToken);
 
@@ -896,6 +1290,10 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     },
     validation,
     validation_b: validationB,
+    validation_loo: validationLoo,
+    calibration,
+    backtest,
+    category_errors: categoryErrors,
     rows: board,
     traded,
   };

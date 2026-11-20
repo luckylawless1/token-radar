@@ -6,7 +6,7 @@
 
 An entry for make.fun's [Build the best token launch radar](https://make.fun/bounty/token-radar-01) bounty. Launch Radar reads the sealed DefiLlama snapshot (758 protocols, as of 2026-11-14), ranks **every protocol that records no token yet — all 342 of them, the snapshot's 40-protocol watchlist included and flagged** — by an implied value from a comparables model fitted on the snapshot itself, and gives each one a costed farm plan with a verdict. Protocols that already record a token are never ranked: they are the model's training data, and the dashboard now accounts for **all 416 of them** in a searchable traded set, so every one of the 758 protocols is on the page exactly once.
 
-This is the second version of the entry. The first asserted two of its value terms — a momentum bonus for a hot week and a maturity bonus for age — with hand-set weights. This version fits every term it keeps, blind-tests every term it was offered, and drops the ones the test does not keep.
+This is the third version of the entry. The first asserted two of its value terms — a momentum bonus for a hot week and a maturity bonus for age — with hand-set weights. The second fitted every term it kept, blind-tested every term it was offered, and dropped the ones the test did not keep. This version keeps the second's pricing model exactly — a 37-specification sweep (below) found nothing that beat it under the keep rule, so the ranked board it writes is byte-identical to the second version's — and adds the audit around the model: a third validation, a calibration table, per-category blind errors, the full candidate ledger, a backtest of the board's own farm verdicts, and a start-here shortlist on the board.
 
 ## The value model
 
@@ -18,16 +18,23 @@ No protocol name is an input anywhere. The model (in `lib/model.ts`, version `co
 4. **No maturity term.** An age term was tested in several forms (log age; the first version's capped-years shape fitted instead of asserted; age bands) and the blind test keeps none of them, so this board carries no age bonus. Age is still printed on every row; it does not raise any price.
 5. **Range.** Every row carries a low–high interval calibrated on **blind** predictions: the 10th–90th percentiles of the out-of-fold residuals (×0.066 to ×10.93 on this snapshot). Those ranges covered **81.25%** of the blind predictions' recorded caps. TVL prices loosely; the board says so instead of hiding it.
 
-**Validation, shown on the dashboard:** the production rule — fit, growth term and bound included — is tested out of sample on every build, twice. The 128 fit-set protocols are split into five folds by an FNV-1a hash of the slug (the first version's partition, kept so the two versions compare fold for fold) and again by a second partition of the same hash; each fold is predicted by a fit that never saw it.
+**Validation, shown on the dashboard:** the production rule — fit, growth term and bound included — is tested out of sample on every build, three times. The 128 fit-set protocols are split into five folds by an FNV-1a hash of the slug (the first version's partition, kept so the versions compare fold for fold) and again by a second partition of the same hash; each fold is predicted by a fit that never saw it. A leave-one-out pass then predicts every fit-set protocol from the other 127.
 
 | | Median absolute error | Within 2× of recorded cap |
 |---|---|---|
 | v1 recipe (TVL + category, asserted terms) | 86.58% | 30.47% |
-| **v2, partition A (same folds)** | **84.86%** | **32.81%** |
-| v2, partition B (second split) | 85.17% | 31.25% |
-| v2 + log-age term (tested, not kept) | 87.03% | 30.47% |
+| **this model, partition A (same folds)** | **84.86%** | **32.81%** |
+| this model, partition B (second split) | 85.17% | 31.25% |
+| this model, leave-one-out | 85.72% | 32.03% |
+| sqrt-TVL weighted least squares (tested, not kept) | 84.62% | 31.25% |
+| Huber robust line (tested, not kept) | 85.77% | 30.47% |
+| this model + log-age term (tested, not kept) | 87.03% | 30.47% |
 
 Weak in absolute terms, and printed on the page rather than rounded away — which is exactly why every row carries its range. The dashboard's model panel carries this same terms-tested table, computed at build time by the model itself.
+
+For this version the sweep behind that table widened to 37 specifications: shrinkage strengths, growth compression divisors, asymmetric and TVL-interacted growth, weighted least squares (log- and sqrt-TVL weights), ridge penalties, per-category shrunk slopes, nearest-neighbour blends, quintile recalibration, Huber and L1 fits, capped-percentage growth, and log-age. The keep rule: a candidate replaces production only if it beats production's median on **both** partitions and gives up nothing within 2× on either. None passed. The closest, sqrt-TVL weighted least squares, won the median on both partitions (84.62% / 84.55%) but lost within-2× on both (31.25% / 27.34% against 32.81% / 31.25%) — at 128 fit members that trade is fold noise, and the dashboard's table says so next to its row.
+
+The dashboard's audit panel adds two more reads on the same blind predictions. A **calibration table** buckets them by quintile of predicted value: the fit compresses the market's own spread toward the middle — conservative at the bottom (median recorded cap ×1.44 of the blind value in the lowest quintile), generous at the top (×0.83 in the highest). A **per-category error table** shows where the fit is strong and where it is thin: RWA prices tightest (33.2% median blind error on 9 fit members); Yield Aggregator is the thinnest read (155.56% on 4).
 
 ## Farm plans and verdicts
 
@@ -35,12 +42,25 @@ Each protocol's plan is generated from its own record — category, chains, TVL 
 
 The verdict nets the plan against an expected take under one stated assumption: a launch sets aside 7.5% of the token's value for the community and 25,000 qualifying wallets share it, so one diligent wallet expects `implied × 0.075 / 25000`. **FARM** when that is at least twice the plan's total cost, **THIN** when it at least covers the cost, **SKIP** below. Each row also states the implied value at which its plan would **break even** and the value at which it would **turn FARM**, so a reader can see the distance to each line. On this snapshot: 69 FARM, 67 THIN, 206 SKIP.
 
+## The verdicts, backtested
+
+Validating prices is not the same as validating decisions, so the audit panel also grades the verdicts themselves. For each of the 128 fit-set protocols, its token is hidden and the rule assigns the verdict it would have given at the value a blind fit produced; the verdict is then graded against the market cap the protocol actually reached — would one wallet's expected take at that cap, under the same 7.5% / 25,000-wallet assumption, have covered the plan's cost?
+
+- **FARM** (20 blind cases): covered plan cost in **85%**; median recorded cap ×1.05 of the blind value.
+- **THIN** (17 cases): covered in 52.94%; median ratio ×0.83.
+- **SKIP** (91 cases): covered in only 25.27% — the skip was usually right.
+- Farming only the FARM bucket: **$1,019 of plan costs against $14,350 of takes** at the recorded caps, ×14.08 per dollar of cost. Farming all 128 the same way: $17,812 against $46,639, ×2.62 — more dollars back, about a fifth of the return per dollar spent.
+
+The fit set is by construction protocols whose tokens exist, so the backtest grades the pricing and the verdict arithmetic — never the chance that any given protocol issues a token at all. The dashboard states that caveat beside the table, and each protocol's detail view carries its own verdict's backtest record next to its farm economics.
+
 ## The dashboard
 
 `dashboard/` is a static page (no framework, no network) rendered from `data.js`, which `main.ts` writes beside it from the same board that goes to `board.json`, so the page and the board cannot disagree. It has:
 
-- a KPI strip and an **integrity strip** (watchlist coverage 40/40, the sealed snapshot date, the fit's size, both partitions' blind errors, the ranges' measured coverage, and the full 342 + 416 = 758 accounting);
-- the model panel with its validation numbers and the **terms-tested table**;
+- a KPI strip and an **integrity strip** (watchlist coverage 40/40, the sealed snapshot date, the fit's size, both partitions' blind errors, the ranges' measured coverage, the verdict backtest's headline, and the full 342 + 416 = 758 accounting);
+- the model panel with its validation numbers (two fold partitions and leave-one-out) and the **terms-tested table**;
+- an **audit panel**: the calibration table, the per-category blind-error table, and the **verdict backtest** with its method and its survivorship caveat;
+- a **“Start here” shortlist** at the head of the board — the five FARM plans with the most expected take over cost, with their combined cost and expected take (it hides itself while any filter is active);
 - search and filters (category, chain, verdict, watchlist-only), seven sort orders, and a per-row **range bar** on a shared log scale;
 - a per-protocol detail view: the record, the model's arithmetic, the **peers' record** (how much of its category already records a token, and at what median multiple — the cohort's history, shown as context and never an input to the price), the plan's economics with its break-even and FARM lines;
 - **“What would change this rank”** — a scenario panel in every detail view: drag a TVL slider and the page re-prices the protocol from the same fitted coefficients the build published, showing the implied value, rank and verdict at that TVL, plus a threshold table (the TVL needed to reach rank #1, rank #10, the FARM line and break-even, and the weekly growth that would compound there in 12 weeks);
