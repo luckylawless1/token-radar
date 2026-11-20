@@ -1,8 +1,9 @@
 // Launch Radar's entry point (Node 22, standard library only).
 //
 // Reads the sealed snapshot (at grading /input/snapshot.json; --input <file|dir> overrides), fits
-// the comparables model in lib/model.ts on the snapshot's tokenized protocols, prices and ranks
-// every protocol that records no token, and writes the hand-in to the output directory:
+// the comparables model in lib/model.ts on the snapshot's tokenized protocols — every value term
+// fitted, each candidate term blind-tested before it is kept — prices and ranks every protocol
+// that records no token, and writes the hand-in to the output directory:
 //
 //   board.json    the ranked board the gate reads
 //   data.js       the dashboard's whole dataset, written beside the page it renders
@@ -106,7 +107,9 @@ for (const row of board) verdicts[row.verdict]++;
 process.stdout.write(
   `launch radar: ${snapshot.protocols.length} protocols in the snapshot, ${board.length} pre-token ranked, ` +
     `${snapshot.watchlist.length} watchlist covered, fit on ${radar.counts.fit_n} tokenized protocols\n` +
-    `launch radar: validation across ${radar.validation.folds} folds: median error ${radar.validation.median_abs_err_pct}%, ` +
-    `${radar.validation.within_2x_pct}% within 2x; verdicts FARM ${verdicts.FARM} / THIN ${verdicts.THIN} / SKIP ${verdicts.SKIP}\n` +
+    `launch radar: blind validation, partition A: median error ${radar.validation.median_abs_err_pct}%, ` +
+    `${radar.validation.within_2x_pct}% within 2x; partition B: median error ${radar.validation_b.median_abs_err_pct}%, ` +
+    `${radar.validation_b.within_2x_pct}% within 2x; ranges covered ${radar.model.range_coverage_pct}% of blind caps\n` +
+    `launch radar: verdicts FARM ${verdicts.FARM} / THIN ${verdicts.THIN} / SKIP ${verdicts.SKIP}\n` +
     `launch radar: wrote board.json, data.js, dashboard/ (${dashFiles.length} files), screenshots/ (${shots.length} images) and dossier.json (${dossier.length} bytes) to ${outDir}\n`,
 );

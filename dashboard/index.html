@@ -13,11 +13,12 @@
       <span class="blip" aria-hidden="true"></span>
       <div>
         <h1>LAUNCH RADAR</h1>
-        <p class="tagline">Every protocol that records no token yet, priced by a comparables fit and ranked. Snapshot <span id="k-asof">…</span> · model <span id="k-model">…</span></p>
+        <p class="tagline">Every protocol that records no token yet, priced by a comparables fit whose every term was blind-tested before it was kept, and ranked. Snapshot <span id="k-asof">…</span> · model <span id="k-model">…</span></p>
       </div>
     </div>
     <div class="kpis" id="kpis" aria-label="Radar totals"></div>
   </div>
+  <div class="integrity" id="integrity" aria-label="Integrity strip"></div>
 </header>
 
 <main id="view-board">
@@ -25,6 +26,16 @@
     <h2>How a protocol gets its number</h2>
     <div id="model-text"></div>
     <div class="validation" id="validation"></div>
+    <h3 class="terms-head">Every candidate term, blind-tested on the same folds</h3>
+    <div class="table-wrap">
+      <table id="terms-table">
+        <thead>
+          <tr><th>Candidate</th><th>Kept?</th><th class="num">Median blind error</th><th class="num">Within 2x</th></tr>
+        </thead>
+        <tbody id="terms-body"></tbody>
+      </table>
+    </div>
+    <p class="muted small" id="terms-note"></p>
   </section>
 
   <section class="controls panel" aria-label="Board controls">
@@ -52,6 +63,7 @@
         <option value="tvl">TVL</option>
         <option value="growth">7-day growth</option>
         <option value="age">Age (tokenless years)</option>
+        <option value="net">Expected take minus cost</option>
         <option value="name">Name</option>
       </select>
     </label>
@@ -77,7 +89,7 @@
             <th class="num">TVL</th>
             <th class="num">7d</th>
             <th class="num">Age</th>
-            <th class="num">Implied value <span class="th-sub">range</span></th>
+            <th class="num">Implied value <span class="th-sub">bar = blind range, log scale</span></th>
             <th>Verdict</th>
           </tr>
         </thead>
@@ -89,7 +101,10 @@
 
   <section class="panel live-panel" aria-label="Protocols whose token already trades">
     <h2>Already trading — priced by the market, not the model</h2>
-    <p class="muted small">These protocols record a token, so the radar never ranks them. They are the fit's training set: the model learns what TVL is worth from the values below.</p>
+    <p class="muted small" id="traded-note"></p>
+    <label class="ctl grow traded-search">Search the traded set
+      <input id="f-traded" type="search" placeholder="Name or slug…" autocomplete="off">
+    </label>
     <div class="table-wrap">
       <table id="live-table">
         <thead>
