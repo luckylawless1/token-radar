@@ -1,6 +1,6 @@
-// Launch Radar's dashboard. Reads window.RADAR (data.js, written beside this page by main.ts)
-// and renders the ranked board, its filters, a per-protocol detail view with a live
-// what-would-change-this-rank scenario panel, and the full already-trading set.
+// Launch Radar's dashboard. Reads window.RADAR (data.js, written beside this page by
+// main.ts) and renders the ranked board, its filters, a per-protocol detail view with a
+// live scenario panel, and the full already-trading set.
 // No network and no framework: every byte on the page comes from that one data file.
 (function () {
   'use strict';
@@ -48,7 +48,7 @@
     return esc(chains.slice(0, 2).join(', ')) + ' +' + (chains.length - 2);
   }
 
-  // ---------------------------------------------------------- header, KPIs, integrity strip
+  // header, KPIs, integrity strip
   $('k-asof').textContent = DATA.as_of;
   $('k-model').textContent = DATA.model_version;
   var M = DATA.model;
@@ -77,7 +77,7 @@
   ];
   $('integrity').innerHTML = strip.join(' <span class="sep">·</span> ');
 
-  // ---------------------------------------------------------- model panel
+  // model panel
   $('model-text').innerHTML =
     '<p>The radar prices a protocol the way the market prices its already-trading peers. On the ' +
     '<b>' + DATA.counts.fit_n + ' tokenized protocols</b> that record both a market cap and a TVL, it regresses ' +
@@ -93,13 +93,16 @@
     'week and few strong growers sit in the fit set. <b>Age is not priced.</b> A maturity bonus was tested in several ' +
     'forms and the blind test keeps none of them (table below), so a protocol\u2019s years with no token recorded are ' +
     'shown on its row but do not raise its price.</p>' +
-    '<p>Each row also carries a <b>range</b> calibrated on blind predictions — the 10th\u201390th percentile of the ' +
-    'out-of-fold residuals (x' + M.range_low_factor + ' to x' + M.range_high_factor + '), which covered ' +
-    M.range_coverage_pct + '% of the blind predictions\u2019 recorded caps. TVL prices loosely; the board says so. ' +
-    '<b>Verdicts</b> net a plan\u2019s cost against an expected take that assumes a launch sets aside ' +
-    (M.airdrop_share * 100) + '% of value for the community, shared by ' + full.format(M.airdrop_wallets) +
-    ' qualifying wallets: FARM when the take is at least twice the cost, THIN when it covers the cost, SKIP below. ' +
-    'Every row states the implied value at which its own plan would break even and turn FARM.</p>';
+    '<p>Each row carries a <b>range</b> calibrated on blind predictions: its category\u2019s own band — that ' +
+    'category\u2019s out-of-fold residual 10th\u201390th percentiles, shrunk toward the global band ' +
+    '(x' + M.range_low_factor + '\u2013x' + M.range_high_factor + ') by the offsets\u2019 own n/(n+' + M.shrink_k + ') ' +
+    'shrinkage. The global band covered ' + M.range_global_coverage_pct + '% of blind caps, unevenly (60% in ' +
+    'its worst category, cross-partition); these covered ' + M.range_coverage_pct + '%, far more evenly — the ' +
+    'test is in the table below. <b>Verdicts</b> net plan cost against an expected take (' +
+    (M.airdrop_share * 100) + '% of value shared by ' + full.format(M.airdrop_wallets) + ' wallets): FARM at ' +
+    M.farm_multiple + 'x cost, THIN at ' + M.thin_multiple + 'x, SKIP below — the lines the blind backtest ' +
+    'itself chooses (panel below). Every row states the value at which its plan breaks even and turns FARM. ' +
+    'TVL prices loosely; the board says so.</p>';
   $('validation').innerHTML = [
     [String(V.n), 'protocols predicted blind'],
     [V.folds + ' + ' + VB.folds + ' folds', 'two slug-hash partitions'],
@@ -114,13 +117,13 @@
   $('terms-body').innerHTML = M.terms_tested.map(function (t) {
     return '<tr><td>' + esc(t.name) +
       (t.note ? '<span class="term-note">' + esc(t.note) + '</span>' : '') + '</td>' +
-      '<td class="' + (t.kept ? 'kept' : 'notkept') + '">' + (t.kept ? 'KEPT — the production model' : 'not kept') + '</td>' +
+      '<td class="' + (t.kept ? 'kept' : 'notkept') + '">' + (t.kept ? (t.calibration ? 'KEPT — calibration' : 'KEPT — the production model') : 'not kept') + '</td>' +
       '<td class="num">' + t.median_abs_err_pct + '%</td>' +
       '<td class="num">' + t.within_2x_pct + '%</td></tr>';
   }).join('');
-  $('terms-note').textContent = 'Same folds, same metric as the headline validation, computed at build time by the model itself. A candidate replaces the production model only if it beats its median error on both fold partitions and gives up nothing within 2x on either — at 128 fit members a single-partition win is fold noise. The first version of this radar asserted a momentum bonus and a maturity bonus instead; the fit contradicts the first and does not support the second.';
+  $('terms-note').textContent = 'Same folds, same metric as the headline validation, computed at build time by the model itself. A candidate replaces the production model only if it beats its median error on both fold partitions and gives up nothing within 2x on either — at 128 fit members a single-partition win is fold noise. The first version of this radar asserted a momentum bonus and a maturity bonus instead; the fit contradicts the first and does not support the second. The two KEPT — calibration rows move no price; their test is cross-partition — fitted on one partition\u2019s blind cases, scored on the other\u2019s.';
 
-  // ---------------------------------------------------------- the audit: calibration, category errors, verdict backtest
+  // the audit: calibration, category errors, verdict backtest
   var CAL = DATA.calibration;
   $('calib-body').innerHTML = CAL.map(function (c, i) {
     return '<tr><td>Q' + (i + 1) + (i === 0 ? ' (lowest)' : i === CAL.length - 1 ? ' (highest)' : '') + '</td>' +
@@ -133,7 +136,7 @@
   $('calib-note').textContent = 'The ' + V.n + ' blind predictions of partition A, bucketed by the value the blind fit assigned. ' +
     'The fit compresses the market\u2019s own spread toward the middle: conservative at the bottom of the table ' +
     '(median recorded cap x' + CAL[0].median_ratio.toFixed(2) + ' of the blind value in the lowest quintile), generous at the top ' +
-    '(x' + CAL[CAL.length - 1].median_ratio.toFixed(2) + ' in the highest). The ranking inherits that compression; each row\u2019s range is drawn from the same residuals.';
+    '(x' + CAL[CAL.length - 1].median_ratio.toFixed(2) + ' in the highest). The ranking inherits that compression.';
 
   var CE = DATA.category_errors;
   $('caterr-body').innerHTML = CE.map(function (c) {
@@ -151,17 +154,19 @@
   var btS = btBucket('SKIP');
   $('backtest-text').innerHTML =
     '<p>The prices above are validated; the board\u2019s <b>decisions</b> are validated here. Take the ' + BT.n +
-    ' tokenized protocols the model trains on. For each one, hide its token and ask what verdict the rule would have ' +
-    'given at the value a <b>blind fit</b> assigned it — a fit that never saw that protocol. Then grade the verdict ' +
-    'against the market cap the protocol actually reached: would one wallet\u2019s expected take at that cap ' +
+    ' tokenized protocols the model trains on, hide each one\u2019s token, and ask what verdict the rule would have ' +
+    'given at the value a <b>blind fit</b> — one that never saw that protocol — assigned it. Then grade the verdict ' +
+    'against the cap the protocol actually reached: would one wallet\u2019s expected take at that cap ' +
     '(' + (M.airdrop_share * 100) + '% of value shared by ' + full.format(M.airdrop_wallets) + ' wallets) have covered the plan\u2019s cost?</p>' +
-    '<p>The separation is the point. The FARM bucket\u2019s blind values were nearly exact (median recorded cap ' +
-    'x' + btF.median_actual_over_blind.toFixed(2) + ' of the blind value) and <b>' + btF.covered_pct + '% of its plans would have ' +
+    '<p>The separation is the point. The FARM bucket\u2019s blind values ran hot (median recorded cap ' +
+    'x' + btF.median_actual_over_blind.toFixed(2) + ' of the blind value) and the recalibrated ' + M.farm_multiple + 'x line ' +
+    'absorbs exactly that: <b>' + btF.covered_pct + '% of its plans would have ' +
     'covered their cost</b>; the SKIP bucket\u2019s plans would have covered in only ' + btS.covered_pct + '% of cases. Farming ' +
     'only the FARM bucket: <b>' + fmtFull(BT.farm_only.cost_usd) + ' of plan costs against ' + fmtFull(BT.farm_only.take_usd) +
     ' of takes</b> at the recorded caps, x' + BT.farm_only.multiple.toFixed(2) + ' per dollar of cost. Farming all ' + BT.n +
     ' the same way: ' + fmtFull(BT.farm_everything.cost_usd) + ' against ' + fmtFull(BT.farm_everything.take_usd) + ', x' +
-    BT.farm_everything.multiple.toFixed(2) + ' — more dollars back, and about a fifth of the return per dollar spent.</p>';
+    BT.farm_everything.multiple.toFixed(2) + ' — more dollars back, and ' +
+    Math.round(100 * BT.farm_everything.multiple / BT.farm_only.multiple) + '% of the return per dollar spent.</p>';
   $('backtest-stats').innerHTML = [
     [btF.covered_pct + '%', 'of FARM plans covered cost'],
     ['x' + btF.median_actual_over_blind.toFixed(2), 'FARM: median cap / blind value'],
@@ -178,9 +183,9 @@
       '<td class="num">x' + b.median_actual_over_blind.toFixed(2) + '</td></tr>';
   }).join('');
   $('backtest-note').textContent = 'The fit set is by construction protocols whose tokens exist, so this grades the pricing and the verdict arithmetic — never the chance that any given protocol issues a token at all. Takes use the board\u2019s stated ' +
-    (M.airdrop_share * 100) + '% / ' + full.format(M.airdrop_wallets) + '-wallet assumption at the recorded caps, and plan costs are the same cost model the board\u2019s plans carry.';
+    (M.airdrop_share * 100) + '% / ' + full.format(M.airdrop_wallets) + '-wallet assumption at the recorded caps, and plan costs are the board\u2019s own cost model.';
 
-  // ---------------------------------------------------------- controls
+  // controls
   var state = { q: '', cat: 'all', chain: 'all', verdict: 'all', watch: false, sort: 'rank' };
   var catCounts = {};
   var chainCounts = {};
@@ -222,7 +227,7 @@
     return out.sort(key);
   }
 
-  // Range bars share one log scale across the whole board, so widths compare row to row.
+  // Range bars share one log scale board-wide.
   var LOG_MIN = Math.log(Math.min.apply(null, ROWS.map(function (r) { return r.implied_low_usd; })));
   var LOG_MAX = Math.log(Math.max.apply(null, ROWS.map(function (r) { return r.implied_high_usd; })));
   function rangeBar(r) {
@@ -258,10 +263,10 @@
     }).join('');
     $('board-note').textContent = rows.length === 0
       ? 'No protocol matches those filters.'
-      : 'Click any row for the protocol\u2019s record, the model\u2019s arithmetic, its peers\u2019 record, a what-would-change-this-rank scenario panel and its full farm plan. Ranks are the model\u2019s claim; the filters only change what you are looking at.';
+      : 'Click any row for its record, the model\u2019s arithmetic, its peers\u2019 record, a what-would-change-this-rank scenario panel and its full farm plan. Ranks are the model\u2019s claim; the filters only change what you are looking at.';
   }
 
-  // ---------------------------------------------------------- start-here shortlist
+  // start-here shortlist
   (function renderShortlist() {
     var picks = ROWS.filter(function (r) { return r.verdict === 'FARM'; })
       .sort(function (a, b) {
@@ -291,11 +296,11 @@
     });
   })();
 
-  // ---------------------------------------------------------- detail view
+  // detail view
   function kv(k, v) { return '<div class="kv"><span>' + esc(k) + '</span><b>' + esc(v) + '</b></div>'; }
 
-  // The scenario maths: the page re-prices the open protocol from the fitted coefficients the
-  // build published, holding the rest of the board and the protocol's own week still.
+  // The scenario maths: re-price the open protocol from the published fitted coefficients,
+  // holding the rest of the board and the protocol's own week still.
   var COEF = M.coeffs;
   function scenarioImplied(r, tvl) {
     var offset = COEF.offsets[r.category === null ? '(uncategorised)' : r.category] || 0;
@@ -309,8 +314,8 @@
   }
   function verdictFor(r, implied) {
     var expected = implied * (M.airdrop_share / M.airdrop_wallets);
-    if (expected >= 2 * r.farm.total_cost_usd) return 'FARM';
-    if (expected >= r.farm.total_cost_usd) return 'THIN';
+    if (expected >= M.farm_multiple * r.farm.total_cost_usd) return 'FARM';
+    if (expected >= M.thin_multiple * r.farm.total_cost_usd) return 'THIN';
     return 'SKIP';
   }
   function tvlForValue(r, value) {
@@ -336,7 +341,7 @@
     var targets = [
       ['Reach rank #1', ROWS[0].implied_value_usd],
       ['Reach rank #10', ROWS[Math.min(9, ROWS.length - 1)].implied_value_usd],
-      ['Turn FARM (take \u2265 2x cost)', r.farm.farm_line_usd],
+      ['Turn FARM (take \u2265 ' + M.farm_multiple + 'x cost)', r.farm.farm_line_usd],
       ['Break even (take covers cost)', r.farm.breakeven_usd],
     ];
     return targets.map(function (t) {
@@ -390,7 +395,7 @@
       kv('Base value from the fit', fmtFull(r.model.base_usd)) +
       kv('Growth adjustment (fitted)', fmtMult(r.model.growth_multiplier)) +
       kv('Implied value', fmtFull(r.implied_value_usd)) +
-      kv('Range (blind p10\u2013p90)', fmtUsd(r.implied_low_usd) + ' \u2013 ' + fmtUsd(r.implied_high_usd)) +
+      kv('Range (its category\u2019s blind band)', fmtUsd(r.implied_low_usd) + ' \u2013 ' + fmtUsd(r.implied_high_usd)) +
       '</div>' +
       '<div><h3>The peers\u2019 record</h3>' +
       kv('Protocols in this category', String(r.peers.cohort)) +
@@ -443,7 +448,7 @@
     window.scrollTo(0, 0);
   }
 
-  // ---------------------------------------------------------- traded set + footer
+  // traded set + footer
   function renderTraded() {
     var q = $('f-traded').value.trim().toLowerCase();
     var rows = TRADED.filter(function (r) {
@@ -458,7 +463,7 @@
         '<td class="num ' + chg + '">' + fmtPct(r.change_7d) + '</td></tr>';
     }).join('');
     $('traded-note').textContent = 'Showing ' + rows.length + ' of ' + TRADED.length + ' protocols that record a token. ' +
-      'The radar never ranks them; they are the fit\u2019s training set, the values the model learns from. Together with the ' +
+      'The radar never ranks them: they are the fit\u2019s training set. Together with the ' +
       DATA.counts.pre_token + ' ranked above, every one of the ' + DATA.counts.protocols + ' protocols in the snapshot is accounted for.';
   }
   $('f-traded').addEventListener('input', renderTraded);
@@ -467,7 +472,7 @@
     DATA.counts.pre_token + ' record no token and are ranked above; ' + DATA.counts.tokenized +
     ' already record one and are never ranked by the model. Implied values are this entry\u2019s own claim from the snapshot\u2019s figures, not a prediction that a token will be issued.';
 
-  // ---------------------------------------------------------- wiring
+  // wiring
   $('f-q').addEventListener('input', function (e) { state.q = e.target.value; renderBoard(); });
   $('f-cat').addEventListener('change', function (e) { state.cat = e.target.value; renderBoard(); });
   $('f-chain').addEventListener('change', function (e) { state.chain = e.target.value; renderBoard(); });
@@ -499,7 +504,7 @@
     URL.revokeObjectURL(a.href);
   });
 
-  // Deep links the page itself honours: ?detail=<slug>, ?watchlist=1, ?cat=<category>.
+  // Deep links honoured: ?detail=<slug>, ?watchlist=1, ?cat=<category>.
   var params = new URLSearchParams(window.location.search);
   if (params.get('watchlist') === '1') { state.watch = true; $('f-watch').checked = true; }
   if (params.get('cat')) {

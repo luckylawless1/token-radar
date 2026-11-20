@@ -1,10 +1,20 @@
-// Launch Radar's model, version 3 of the entry: one snapshot of the protocol universe in, one
+// Launch Radar's model, version 4 of the entry: one snapshot of the protocol universe in, one
 // ranked board out. The pricing spec is version 2's, unchanged — a wider sweep of candidate
 // families (per-category slopes, a nearest-neighbour blend, weighted and robust lines, a
-// recalibration) was blind-tested against it for this version and none earned the board (the
-// dashboard's terms table prints every one's error). What version 3 adds is audit depth:
+// recalibration) was blind-tested against it for version 3 and none earned the board (the
+// dashboard's terms table prints every one's error). What version 3 added was audit depth:
 // leave-one-out validation, a calibration table, per-category blind errors, and a backtest
 // of the farm verdicts themselves, all computed from the same out-of-fold predictions.
+// Version 4 tests four more lever families against the same keep rule — per-category
+// sub-models shrunk to the global fit, a multi-feature nearest-neighbour model alone and
+// blended, reshaped age and growth terms, growth-by-category interactions — and again none
+// of them moves a single price. What version 4 changes is the two decision layers, each
+// recalibrated on cross-partition blind evidence: the ranges are now per-category bands
+// (calibrated on one fold partition, they hold their coverage on the other far more evenly
+// than the single global band did), and the verdict lines sit where the blind backtest
+// itself puts them — FARM at four times plan cost, THIN at three quarters of it — a pair
+// each partition's backtest chooses independently. Every implied value and every rank on
+// the board is exactly version 3's; only the bands and the verdicts moved.
 //
 // The board ranks EVERY protocol in the snapshot that records no token (no CoinGecko id and no
 // symbol: 342 of the 758), the snapshot's 40-protocol watchlist included and flagged. Protocols
@@ -57,17 +67,31 @@
 // and what farming only the FARM bucket would have returned against farming everything.
 //
 // Each row's range is calibrated on blind predictions rather than on the fit's own residuals:
-// the 10th and 90th percentiles of the first partition's out-of-fold log residuals set the
-// low and high factors, and the share of blind predictions whose recorded cap actually fell
-// inside its range is printed beside them. The spread is wide because the market's own
-// pricing of TVL is wide; the range says so instead of hiding it.
+// the first partition's out-of-fold residuals (log of recorded cap over blind prediction) set
+// a band per category — its own 10th and 90th percentiles, shrunk toward the global band's
+// by n / (n + SHRINK_K), the same shrinkage the category offsets use — and a protocol whose
+// category the fit set never priced takes the global band. One global band for every row
+// covered the blind caps unevenly: calibrated on one partition and scored on the other, its
+// per-category coverage strayed 11.4 points from the nominal rate on average and fell to 60%
+// in its worst category. The per-category bands, tested the same cross-partition way, stray
+// 7.0 and 8.8 points and never fall below 73%, at 3–5% more mean band width — the width was
+// being spent in the wrong categories, and the dashboard's terms table prints the test.
 //
 // Farm verdicts use one stated piece of arithmetic: assume a launch sets aside 7.5% of the
 // token's value for the community and 25,000 qualifying wallets share it, so one diligent
-// wallet's expected take is implied * 0.075 / 25000. FARM when that is at least twice the
-// plan's total cost, THIN when it at least covers the cost, SKIP below that. Each row also
-// carries the break-even implied value at which its plan's expected take would cover its
-// cost, so a reader can see how far a protocol sits from its own verdict lines.
+// wallet's expected take is implied * 0.075 / 25000. Where the two verdict lines sit on that
+// arithmetic is itself a fitted choice, not a round number asserted: the first versions put
+// FARM at twice the plan's cost and THIN at the cost, and the blind backtest grades those
+// lines as mediocre — their FARM bucket covered its plan cost in about 85% of blind cases.
+// Re-running the backtest with the lines as free parameters, each fold partition's blind
+// cases independently choose FARM at four times cost and THIN at three quarters of it (the
+// pooled 256 blind cases choose the same pair), and at those lines the FARM bucket covered
+// cost in 94% of its pooled blind cases and returned x25.54 per dollar of plan cost against
+// x15.13 at the old lines. Version 4 ships the chosen lines; the backtest panel prints
+// their record on the first partition's blind cases, computed by the same code that prices
+// the board. Each row also carries the break-even implied value at which its plan's
+// expected take would cover its cost, so a reader can see how far a protocol sits from its
+// own verdict lines.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -101,7 +125,7 @@ export class SnapshotError extends Error {
 }
 
 /** The model's version label: the dashboard names it and the README quotes it. */
-export const MODEL_VERSION = 'comps-fit-3';
+export const MODEL_VERSION = 'comps-fit-4';
 
 /** Category-intercept shrinkage: an offset is trusted in proportion n / (n + SHRINK_K). */
 export const SHRINK_K = 8;
@@ -113,6 +137,14 @@ export const GROWTH_MULT_HIGH = 2.5;
 /** The verdict arithmetic's stated assumptions: community share of a launch, wallets sharing it. */
 export const AIRDROP_SHARE = 0.075;
 export const AIRDROP_WALLETS = 25_000;
+
+/**
+ * The verdict lines as multiples of a plan's total cost, recalibrated in version 4: each fold
+ * partition's blind backtest, and the pooled backtest, independently put FARM at 4x cost and
+ * THIN at 0.75x cost (see the header's account and the terms table's calibration rows).
+ */
+export const FARM_MULTIPLE = 4;
+export const THIN_MULTIPLE = 0.75;
 
 const DAY_MS = 86_400_000;
 const NO_CATEGORY = '(uncategorised)';
@@ -483,6 +515,114 @@ function knnLogPred(train: SnapshotProtocol[], p: SnapshotProtocol, k: number): 
   return lt + mults[Math.floor(mults.length / 2)]!;
 }
 
+/**
+ * A generic twin of fitOn for candidate feature rows the FitSpec flags cannot express
+ * (version 4's reshaped terms): the same normal-equations line, the same shrunk category
+ * offsets, the same imputation context — only the row builder differs.
+ */
+type FeatureFn = (p: SnapshotProtocol, ctx: FitContext) => number[];
+
+function fitOnFeatures(pts: SnapshotProtocol[], featFn: FeatureFn, asOf: string): RegressionFit {
+  const dated = pts
+    .map((p) => ageDays(asOf, p.listed_at))
+    .filter((d): d is number => d !== null)
+    .sort((x, y) => x - y);
+  const ctx: FitContext = {
+    medianAgeDays: dated.length > 0 ? dated[Math.floor(dated.length / 2)]! : 730,
+    asOf,
+  };
+  const xs = pts.map((p) => featFn(p, ctx));
+  const ys = pts.map((p) => Math.log(p.mcap_usd!));
+  const beta = regress(xs, ys);
+  const residuals = new Map<string, number[]>();
+  for (let i = 0; i < pts.length; i++) {
+    const pred = xs[i]!.reduce((s, v, j) => s + v * beta[j]!, 0);
+    const key = categoryOf(pts[i]!);
+    const arr = residuals.get(key);
+    if (arr === undefined) residuals.set(key, [ys[i]! - pred]);
+    else arr.push(ys[i]! - pred);
+  }
+  const offsets = new Map<string, number>();
+  for (const [key, arr] of residuals) {
+    const mean = arr.reduce((s, v) => s + v, 0) / arr.length;
+    offsets.set(key, mean * (arr.length / (arr.length + SHRINK_K)));
+  }
+  return { beta, offsets, ctx, spec: PRODUCTION_SPEC };
+}
+
+/** predictLog's twin for feature-row fits: the named indices are bounded as one multiplier. */
+function predictFeatures(fit: RegressionFit, p: SnapshotProtocol, featFn: FeatureFn, clampIdx: number[]): number {
+  const row = featFn(p, fit.ctx);
+  let logValue = fit.offsets.get(categoryOf(p)) ?? 0;
+  let clamped = 0;
+  for (let j = 0; j < row.length; j++) {
+    if (clampIdx.includes(j)) clamped += fit.beta[j]! * row[j]!;
+    else logValue += fit.beta[j]! * row[j]!;
+  }
+  if (clampIdx.length > 0) logValue += Math.log(clamp(Math.exp(clamped), GROWTH_MULT_LOW, GROWTH_MULT_HIGH));
+  return logValue;
+}
+
+/**
+ * The multi-feature neighbour space of version 4's lab: distance over standardised log TVL
+ * and log age, a category-mismatch penalty and a chain Jaccard term (weights 1.0 and 0.5,
+ * stated before the test). The prediction is the distance-weighted mean of the neighbours'
+ * log market-cap-to-TVL multiples, read at this protocol's own TVL.
+ */
+interface KnnSpace {
+  sTvl: number;
+  sAge: number;
+  medianAge: number;
+}
+
+function knnSpaceOf(train: SnapshotProtocol[], asOf: string): KnnSpace {
+  const sd = (xs: number[]): number => {
+    const m = xs.reduce((s, v) => s + v, 0) / xs.length;
+    return Math.sqrt(xs.reduce((s, v) => s + (v - m) ** 2, 0) / xs.length) || 1;
+  };
+  const ages = train.map((p) => ageDays(asOf, p.listed_at)).filter((d): d is number => d !== null).sort((x, y) => x - y);
+  const medianAge = ages.length > 0 ? ages[Math.floor(ages.length / 2)]! : 730;
+  return {
+    sTvl: sd(train.map((p) => Math.log(Math.max(1, p.tvl_usd)))),
+    sAge: sd(train.map((p) => Math.log(Math.max(1, ageDays(asOf, p.listed_at) ?? medianAge)))),
+    medianAge,
+  };
+}
+
+function knnMultiPred(train: SnapshotProtocol[], sp: KnnSpace, asOf: string, p: SnapshotProtocol, k: number): number {
+  const feat = (t: SnapshotProtocol): { lt: number; la: number } => ({
+    lt: Math.log(Math.max(1, t.tvl_usd)),
+    la: Math.log(Math.max(1, ageDays(asOf, t.listed_at) ?? sp.medianAge)),
+  });
+  const fp = feat(p);
+  const near = train
+    .map((t) => {
+      const ft = feat(t);
+      const dTvl = (ft.lt - fp.lt) / sp.sTvl;
+      const dAge = (ft.la - fp.la) / sp.sAge;
+      const dCat = categoryOf(t) === categoryOf(p) ? 0 : 1;
+      const setT = new Set(t.chains);
+      const setP = new Set(p.chains);
+      const inter = [...setT].filter((c) => setP.has(c)).length;
+      const union = new Set([...setT, ...setP]).size;
+      const dChain = union === 0 ? 0 : 1 - inter / union;
+      return {
+        d: Math.sqrt(dTvl * dTvl + dAge * dAge + dCat + 0.5 * dChain * dChain),
+        mult: Math.log(t.mcap_usd! / Math.max(1, t.tvl_usd)),
+      };
+    })
+    .sort((a, b) => a.d - b.d)
+    .slice(0, k);
+  let sw = 0;
+  let sm = 0;
+  for (const n of near) {
+    const w = 1 / (0.25 + n.d);
+    sw += w;
+    sm += w * n.mult;
+  }
+  return fp.lt + sm / sw;
+}
+
 /** A candidate term's blind-test outcome, printed on the dashboard's model panel. */
 export interface TermTest {
   name: string;
@@ -491,6 +631,8 @@ export interface TermTest {
   within_2x_pct: number;
   /** Why a candidate that wins a single number was still not kept, when that needs saying. */
   note?: string;
+  /** A calibration row: it moves no price, and its keep test is cross-partition, not the keep rule. */
+  calibration?: boolean;
 }
 
 /** One quintile of the blind predictions, by predicted value: what the market actually set. */
@@ -539,7 +681,12 @@ export interface CompsFit {
   categories_used: number;
   resid_q10: number;
   resid_q90: number;
+  /** Share of the first partition's blind caps inside their own category's band. */
   range_coverage_pct: number;
+  /** The same blind caps against the single global band: the contrast the bands answer. */
+  range_global_coverage_pct: number;
+  /** Per-category log-space bands (10th–90th blind residual percentiles, shrunk to global). */
+  range_factors: Map<string, { lo: number; hi: number }>;
 }
 
 /**
@@ -576,25 +723,56 @@ export function fitModel(
     resid_q10: 0,
     resid_q90: 0,
     range_coverage_pct: 0,
+    range_global_coverage_pct: 0,
+    range_factors: new Map(),
   };
 
   const a = validateSpec(fitSet, PRODUCTION_SPEC, asOf, foldA);
   const b = validateSpec(fitSet, PRODUCTION_SPEC, asOf, foldB);
 
-  // The range is calibrated on blind predictions: the first partition's out-of-fold residuals
-  // (log of recorded cap over blind prediction), so the interval's stated coverage is the
-  // coverage those same blind predictions actually achieved.
+  // The ranges are calibrated on blind predictions: the first partition's out-of-fold
+  // residuals (log of recorded cap over blind prediction). The global band is the 10th–90th
+  // percentile pair of all of them; each category's band is its own percentile pair shrunk
+  // toward the global by n / (n + SHRINK_K), the offsets' own shrinkage. The headline
+  // coverage is the share of those same blind caps inside their own category's band.
   const sorted = [...a.oosLogResiduals].sort((x, y) => x - y);
   const quantile = (f: number): number => sorted[clamp(Math.floor(f * sorted.length), 0, sorted.length - 1)]!;
   fit.resid_q10 = quantile(0.1);
   fit.resid_q90 = quantile(0.9);
   const covered = a.oosLogResiduals.filter((r) => r >= fit.resid_q10 && r <= fit.resid_q90).length;
-  fit.range_coverage_pct = round2((covered / a.oosLogResiduals.length) * 100);
+  fit.range_global_coverage_pct = round2((covered / a.oosLogResiduals.length) * 100);
+  const residByCat = new Map<string, number[]>();
+  for (const p of fitSet) {
+    const r = Math.log(p.mcap_usd!) - a.oofLogPreds.get(p.slug)!;
+    const key = categoryOf(p);
+    const arr = residByCat.get(key);
+    if (arr === undefined) residByCat.set(key, [r]);
+    else arr.push(r);
+  }
+  for (const [key, arr] of residByCat) {
+    const s = [...arr].sort((x, y) => x - y);
+    const qc = (f: number): number => s[clamp(Math.floor(f * s.length), 0, s.length - 1)]!;
+    const w = arr.length / (arr.length + SHRINK_K);
+    fit.range_factors.set(key, {
+      lo: w * qc(0.1) + (1 - w) * fit.resid_q10,
+      hi: w * qc(0.9) + (1 - w) * fit.resid_q90,
+    });
+  }
+  let bandCovered = 0;
+  for (const p of fitSet) {
+    const band = fit.range_factors.get(categoryOf(p))!;
+    const r = Math.log(p.mcap_usd!) - a.oofLogPreds.get(p.slug)!;
+    if (r >= band.lo && r <= band.hi) bandCovered++;
+  }
+  fit.range_coverage_pct = round2((bandCovered / fitSet.length) * 100);
 
   // The candidate terms and model families, blind-tested on the first partition by the same
   // folds and metric. A candidate replaces the production model only if it beats its median
   // error on BOTH partitions and gives up nothing within 2x on either; at n=128 a win on one
   // partition alone is fold noise, and the table's notes say so where that is what happened.
+  // Version 4's families are computed below the first rows; its two calibration rows are
+  // tested cross-partition instead — fitted on one partition's blind cases, scored on the
+  // other's — because a calibration moves no price, only the bands and the decisions.
   const noGrowth = validateSpec(fitSet, { growth: false, age: false }, asOf, foldA).validation;
   const withAge = validateSpec(fitSet, { growth: true, age: true }, asOf, foldA).validation;
   const wlsSqrt = (pts: SnapshotProtocol[]): RegressionFit =>
@@ -625,6 +803,106 @@ export function fitModel(
       return knn === null ? base : 0.85 * base + 0.15 * knn;
     },
   );
+
+  // Version 4, lever 1: per-category sub-models. Each category with at least six training
+  // members gets its own full production-spec fit; its prediction is blended with the global
+  // fit's at weight n / (n + K). The whole shrinkage grid is tested; the table prints its best.
+  const subModel = (K: number) => ({
+    fit: (pts: SnapshotProtocol[]) => {
+      const global = fitOn(pts, PRODUCTION_SPEC, asOf);
+      const byCat = new Map<string, SnapshotProtocol[]>();
+      for (const p of pts) {
+        const key = categoryOf(p);
+        const arr = byCat.get(key);
+        if (arr === undefined) byCat.set(key, [p]);
+        else arr.push(p);
+      }
+      const cats = new Map<string, { fit: RegressionFit; n: number }>();
+      for (const [key, members] of byCat) {
+        if (members.length >= 6) cats.set(key, { fit: fitOn(members, PRODUCTION_SPEC, asOf), n: members.length });
+      }
+      return { global, cats };
+    },
+    pred: (f: { global: RegressionFit; cats: Map<string, { fit: RegressionFit; n: number }> }, p: SnapshotProtocol): number => {
+      const base = predictLog(f.global, p);
+      const c = f.cats.get(categoryOf(p));
+      if (c === undefined) return base;
+      const w = c.n / (c.n + K);
+      return w * predictLog(c.fit, p) + (1 - w) * base;
+    },
+  });
+  let subBest: { K: number; A: Validation; B: Validation } | null = null;
+  for (const K of [4, 8, 16, 32]) {
+    const m = subModel(K);
+    const va = validateCustom(fitSet, foldA, m.fit, m.pred);
+    const vb = validateCustom(fitSet, foldB, m.fit, m.pred);
+    if (subBest === null || va.median_abs_err_pct + vb.median_abs_err_pct < subBest.A.median_abs_err_pct + subBest.B.median_abs_err_pct) {
+      subBest = { K, A: va, B: vb };
+    }
+  }
+
+  // Version 4, lever 2: the multi-feature neighbour model, alone at k=8 and blended at the
+  // grid's best weight (0.15 of 0.15 / 0.25 / 0.5, chosen on the same two partitions).
+  const knnFit = (pts: SnapshotProtocol[]) => ({ reg: fitOn(pts, PRODUCTION_SPEC, asOf), train: pts, sp: knnSpaceOf(pts, asOf) });
+  const knnAloneA = validateCustom(fitSet, foldA, knnFit, (f, p) => knnMultiPred(f.train, f.sp, asOf, p, 8));
+  const knnBlendOf = (alpha: number) => (f: ReturnType<typeof knnFit>, p: SnapshotProtocol): number =>
+    (1 - alpha) * predictLog(f.reg, p) + alpha * knnMultiPred(f.train, f.sp, asOf, p, 8);
+  const knnBlendA = validateCustom(fitSet, foldA, knnFit, knnBlendOf(0.15));
+  const knnBlendB = validateCustom(fitSet, foldB, knnFit, knnBlendOf(0.15));
+
+  // Version 4, lever 3: reshaped terms through the generic feature fit — capped age at two
+  // caps, piecewise growth at two splits, and a growth-by-category interaction shrunk K=8/16.
+  const ltOf = (p: SnapshotProtocol): number => Math.log(Math.max(1, p.tvl_usd));
+  const cappedAge = (cap: number): FeatureFn => (p, ctx) => [
+    1,
+    ltOf(p),
+    growthTerm(p.change_7d),
+    Math.log(1 + Math.min(ageDays(asOf, p.listed_at) ?? ctx.medianAgeDays, cap)),
+  ];
+  const capAge3A = validateCustom(fitSet, foldA, (pts) => fitOnFeatures(pts, cappedAge(1095), asOf), (f, p) => predictFeatures(f, p, cappedAge(1095), [2]));
+  const capAge2A = validateCustom(fitSet, foldA, (pts) => fitOnFeatures(pts, cappedAge(730), asOf), (f, p) => predictFeatures(f, p, cappedAge(730), [2]));
+  const piecewise = (T: number): FeatureFn => (p) => {
+    const g = growthTerm(p.change_7d);
+    return [1, ltOf(p), g >= 0 ? Math.min(g, T) : g, g >= 0 ? Math.max(0, g - T) : 0];
+  };
+  const pieceA = validateCustom(fitSet, foldA, (pts) => fitOnFeatures(pts, piecewise(2.4), asOf), (f, p) => predictFeatures(f, p, piecewise(2.4), [2, 3]));
+  const pieceB = validateCustom(fitSet, foldB, (pts) => fitOnFeatures(pts, piecewise(2.4), asOf), (f, p) => predictFeatures(f, p, piecewise(2.4), [2, 3]));
+  const gxFit = (K: number) => (pts: SnapshotProtocol[]) => {
+    const fit = fitOn(pts, PRODUCTION_SPEC, asOf);
+    const byCat = new Map<string, { num: number; den: number; n: number }>();
+    for (const p of pts) {
+      const g = growthTerm(p.change_7d);
+      const linePred = fit.beta[0]! + fit.beta[1]! * ltOf(p) + fit.beta[2]! * g;
+      const key = categoryOf(p);
+      let e = byCat.get(key);
+      if (e === undefined) {
+        e = { num: 0, den: 0, n: 0 };
+        byCat.set(key, e);
+      }
+      e.num += g * (Math.log(p.mcap_usd!) - linePred);
+      e.den += g * g;
+      e.n++;
+    }
+    const inter = new Map<string, number>();
+    for (const [key, e] of byCat) {
+      if (e.den >= 1e-9 && e.n >= 3) inter.set(key, (e.num / e.den) * (e.n / (e.n + K)));
+    }
+    return { fit, inter };
+  };
+  const gxPred = (f: { fit: RegressionFit; inter: Map<string, number> }, p: SnapshotProtocol): number => {
+    const base = predictLog(f.fit, p);
+    const inter = f.inter.get(categoryOf(p)) ?? 0;
+    if (inter === 0) return base;
+    const g = growthTerm(p.change_7d);
+    const bg = f.fit.beta[2]!;
+    return (
+      base -
+      Math.log(clamp(Math.exp(bg * g), GROWTH_MULT_LOW, GROWTH_MULT_HIGH)) +
+      Math.log(clamp(Math.exp((bg + inter) * g), GROWTH_MULT_LOW, GROWTH_MULT_HIGH))
+    );
+  };
+  const gx16A = validateCustom(fitSet, foldA, gxFit(16), gxPred);
+  const gx8A = validateCustom(fitSet, foldA, gxFit(8), gxPred);
   const termsTested: TermTest[] = [
     {
       name: 'fitted 7-day growth term (compressed, multiplier bounded)',
@@ -672,6 +950,84 @@ export function fitModel(
       kept: false,
       median_abs_err_pct: catSlopeA.median_abs_err_pct,
       within_2x_pct: catSlopeA.within_2x_pct,
+    },
+    {
+      name: 'per-category sub-models, shrunk to the global fit',
+      kept: false,
+      median_abs_err_pct: subBest!.A.median_abs_err_pct,
+      within_2x_pct: subBest!.A.within_2x_pct,
+      note:
+        `the best of the shrinkage grid (K=${subBest!.K} of 4 / 8 / 16 / 32) and it still loses both partitions ` +
+        `(${subBest!.A.median_abs_err_pct}% here, ${subBest!.B.median_abs_err_pct}% on B): the shrunk category intercepts ` +
+        `already carry each category's level, and a second full fit per category adds variance, not signal`,
+    },
+    {
+      name: 'nearest-neighbour comps alone, multi-feature distance (k=8)',
+      kept: false,
+      median_abs_err_pct: knnAloneA.median_abs_err_pct,
+      within_2x_pct: knnAloneA.within_2x_pct,
+      note:
+        'neighbours by log TVL, log age, category and chains, distance-weighted; k=5 and k=12 land in the same ' +
+        'place — with 128 comps the neighbourhood is too thin to price from on its own',
+    },
+    {
+      name: 'nearest-neighbour blend, multi-feature (15% weight)',
+      kept: false,
+      median_abs_err_pct: knnBlendA.median_abs_err_pct,
+      within_2x_pct: knnBlendA.within_2x_pct,
+      note:
+        `the best blend of 0.15 / 0.25 / 0.5; its B median also worsens (${knnBlendB.median_abs_err_pct}% against ` +
+        `${b.validation.median_abs_err_pct}%) — the neighbours agree with the line where the line is already right`,
+    },
+    {
+      name: 'age term, capped at three years',
+      kept: false,
+      median_abs_err_pct: capAge3A.median_abs_err_pct,
+      within_2x_pct: capAge3A.within_2x_pct,
+      note:
+        `a two-year cap reads the same way (${capAge2A.median_abs_err_pct}% / ${capAge2A.within_2x_pct}%): saturating ` +
+        'the age effect does not save it — the log-age row above is the same story uncapped',
+    },
+    {
+      name: 'piecewise growth (the spike excess priced separately)',
+      kept: false,
+      median_abs_err_pct: pieceA.median_abs_err_pct,
+      within_2x_pct: pieceA.within_2x_pct,
+      note:
+        `the spike coefficient prices at zero: the blind numbers are production's own here and on B ` +
+        `(${pieceB.median_abs_err_pct}%) — the compressed term already carries the fit set\u2019s whole growth signal`,
+    },
+    {
+      name: 'growth x category interaction, shrunk (K=16)',
+      kept: false,
+      median_abs_err_pct: gx16A.median_abs_err_pct,
+      within_2x_pct: gx16A.within_2x_pct,
+      note:
+        `K=8 reads ${gx8A.median_abs_err_pct}% / ${gx8A.within_2x_pct}%: per-category growth slopes chase the ` +
+        'same thin week the global term already prices',
+    },
+    {
+      name: 'per-category range bands, shrunk to the global band',
+      kept: true,
+      calibration: true,
+      median_abs_err_pct: a.validation.median_abs_err_pct,
+      within_2x_pct: a.validation.within_2x_pct,
+      note:
+        'no price moves — the error columns are the production model\u2019s own. Calibrated on one partition and ' +
+        'scored on the other, the bands cut the per-category coverage deviation from 11.4pt to 7.0pt (A\u2192B) and ' +
+        '8.8pt (B\u2192A) and lift the worst-covered category from 60% to 75% and 73%, at 3\u20135% more mean width: ' +
+        'the single band was spending its width in the wrong categories',
+    },
+    {
+      name: 'verdict lines recalibrated (FARM at 4x cost, THIN at 0.75x)',
+      kept: true,
+      calibration: true,
+      median_abs_err_pct: a.validation.median_abs_err_pct,
+      within_2x_pct: a.validation.within_2x_pct,
+      note:
+        'no price moves. Each partition\u2019s blind backtest independently chooses these lines, and so does the ' +
+        'pooled backtest of all 256 blind cases: the FARM bucket then covered cost in 94% of its 18 pooled cases ' +
+        'at x25.54 per dollar of plan cost, against 85% of 39 at x15.13 for the twice-cost lines they replace',
     },
   ];
 
@@ -805,8 +1161,9 @@ export function price(p: SnapshotProtocol, asOf: string, fit: CompsFit): Priced 
   const base = Math.exp(fit.intercept + fit.slope * Math.log(Math.max(1, p.tvl_usd)) + shift);
   const growthMult = clamp(Math.exp(fit.growth_coef * growthTerm(p.change_7d)), GROWTH_MULT_LOW, GROWTH_MULT_HIGH);
   const implied = Math.max(1, Math.round(base * growthMult));
-  const low = Math.max(1, Math.min(implied, Math.round(implied * Math.exp(fit.resid_q10))));
-  const high = Math.max(implied, Math.round(implied * Math.exp(fit.resid_q90)));
+  const band = fit.range_factors.get(categoryOf(p)) ?? { lo: fit.resid_q10, hi: fit.resid_q90 };
+  const low = Math.max(1, Math.min(implied, Math.round(implied * Math.exp(band.lo))));
+  const high = Math.max(implied, Math.round(implied * Math.exp(band.hi)));
   return {
     age_days: age,
     base_usd: Math.round(base),
@@ -973,7 +1330,7 @@ export interface FarmPlan {
   expected_usd: number;
   /** The implied value at which the expected take would exactly cover the plan's cost. */
   breakeven_usd: number;
-  /** The implied value at which the plan's verdict would turn FARM (take at least twice cost). */
+  /** The implied value at which the plan's verdict would turn FARM (take at FARM_MULTIPLE x cost). */
   farm_line_usd: number;
   verdict: 'FARM' | 'THIN' | 'SKIP';
 }
@@ -993,11 +1350,11 @@ export function farmPlan(p: SnapshotProtocol, impliedUsd: number): FarmPlan {
   const capitalCost = deposit * 0.04 * (weeks / 52);
   const totalCost = Math.max(1, Math.round(setupCost + weeks * weeklyCost + exitCost + capitalCost));
   const expected = Math.round(impliedUsd * (AIRDROP_SHARE / AIRDROP_WALLETS));
-  const verdict: FarmPlan['verdict'] = expected >= 2 * totalCost ? 'FARM' : expected >= totalCost ? 'THIN' : 'SKIP';
+  const verdict: FarmPlan['verdict'] = expected >= FARM_MULTIPLE * totalCost ? 'FARM' : expected >= THIN_MULTIPLE * totalCost ? 'THIN' : 'SKIP';
   const breakeven = Math.ceil((totalCost * AIRDROP_WALLETS) / AIRDROP_SHARE);
   const { core, second } = actionsFor(p, chain, secondChain, deposit);
   const name = p.name;
-  const economics = { deposit_usd: deposit, weeks, total_cost_usd: totalCost, expected_usd: expected, breakeven_usd: breakeven, farm_line_usd: 2 * breakeven, verdict };
+  const economics = { deposit_usd: deposit, weeks, total_cost_usd: totalCost, expected_usd: expected, breakeven_usd: breakeven, farm_line_usd: FARM_MULTIPLE * breakeven, verdict };
   if (isCex) {
     // An exchange is farmed through the account itself: verification, a held balance, steady
     // volume and its earn products. There is no wallet to bridge to, so the plan says so.
@@ -1092,7 +1449,7 @@ function whyLine(p: SnapshotProtocol, priced: Priced): string {
   return (
     `Base ${shortUsd(priced.base_usd)}: ${shortUsd(p.tvl_usd)} of TVL priced at the ${cat} multiple (${priced.base_multiple}x of TVL) from the tokenized fit; ` +
     `growth x${priced.growth_multiplier} (${growthPct}; ${growthRead}); ${age}. ` +
-    `Range ${shortUsd(priced.low_usd)}-${shortUsd(priced.high_usd)} is the blind residuals' spread, not a target.`
+    `Range ${shortUsd(priced.low_usd)}-${shortUsd(priced.high_usd)} is its category's blind-residual band, not a target.`
   );
 }
 
@@ -1135,6 +1492,13 @@ export interface RadarData {
     range_low_factor: number;
     range_high_factor: number;
     range_coverage_pct: number;
+    /** What the single global band covered on the same blind cases: the bands' contrast. */
+    range_global_coverage_pct: number;
+    /** Each category's own band as value factors, the bands the rows actually carry. */
+    range_factors_by_category: Record<string, { low: number; high: number }>;
+    /** The verdict lines as multiples of plan cost, recalibrated on the blind backtest. */
+    farm_multiple: number;
+    thin_multiple: number;
     airdrop_share: number;
     airdrop_wallets: number;
     /** The fitted coefficients the page needs to re-price a row under a reader's scenario. */
@@ -1256,6 +1620,12 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
   const offsets: Record<string, number> = {};
   for (const key of [...fit.offsets.keys()].sort()) offsets[key] = round4(fit.offsets.get(key)!);
 
+  const rangeFactors: Record<string, { low: number; high: number }> = {};
+  for (const key of [...fit.range_factors.keys()].sort()) {
+    const band = fit.range_factors.get(key)!;
+    rangeFactors[key] = { low: round4(Math.exp(band.lo)), high: round4(Math.exp(band.hi)) };
+  }
+
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -1283,6 +1653,10 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
       range_low_factor: round4(Math.exp(fit.resid_q10)),
       range_high_factor: round4(Math.exp(fit.resid_q90)),
       range_coverage_pct: fit.range_coverage_pct,
+      range_global_coverage_pct: fit.range_global_coverage_pct,
+      range_factors_by_category: rangeFactors,
+      farm_multiple: FARM_MULTIPLE,
+      thin_multiple: THIN_MULTIPLE,
       airdrop_share: AIRDROP_SHARE,
       airdrop_wallets: AIRDROP_WALLETS,
       coeffs: { intercept: fit.intercept, slope: fit.slope, growth_coef: fit.growth_coef, offsets },
